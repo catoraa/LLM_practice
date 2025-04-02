@@ -1,4 +1,5 @@
 import os
+
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 import torch
 from torch import nn
@@ -8,12 +9,14 @@ import logging
 import datasets
 from datasets import load_dataset
 from transformers import DebertaV2ForSequenceClassification, DebertaV2Tokenizer, DataCollatorWithPadding, \
-    AutoModelForSequenceClassification, DebertaV2Model, DebertaV2Config,Trainer, TrainingArguments
+    DebertaV2Model, DebertaV2Config, Trainer, TrainingArguments
 from transformers.models.deberta_v2.modeling_deberta_v2 import DebertaV2Encoder
 import numpy as np
 import evaluate
 from scipy.stats import pearsonr
-from scipy.special import softmax,kl_div
+from scipy.special import softmax, kl_div
+
+
 # 创建学生模型，隐藏层减半
 def create_student(teacher_model):
     # 读取教师模型结构config
@@ -46,12 +49,16 @@ def copy_deberta_weights(teacher, student):
     # 3.其他模块
     else:
         student.load_state_dict(teacher.state_dict())
+
+
 # 蒸馏参数
 class DistillationTrainingArguments(TrainingArguments):
     def __init__(self, *args, alpha=0.5, temperature=2.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.alpha = alpha
         self.temperature = temperature
+
+
 # 蒸馏trainer
 class DistillationTrainer(Trainer):
     def __init__(self, *args, teacher_model=None, **kwargs):
@@ -89,6 +96,20 @@ class DistillationTrainer(Trainer):
             inputs["labels"].detach().cpu().numpy()
         )
 
+    def prediction_step(self, model, inputs, prediction_loss_only=None, ignore_keys=None):
+        inputs = self._prepare_inputs(inputs)
+        with torch.no_grad():
+            outputs_student = model(**inputs)
+            outputs_teacher = self.teacher(**inputs)
+
+        loss = outputs_student.loss
+
+        if prediction_loss_only:
+            return loss, None, None
+
+        return outputs_student.logits, outputs_teacher.logits, inputs["labels"]
+
+
 # 蒸馏数据加载
 train = load_dataset("glue", "sst2", split="train")
 validation = load_dataset("glue", "sst2", split="validation")
@@ -117,8 +138,9 @@ if __name__ == '__main__':
     teacher_model = DebertaV2ForSequenceClassification.from_pretrained(teacher_id)
     origin_id = "microsoft/deberta-v3-base"
     origin_model = DebertaV2ForSequenceClassification.from_pretrained(origin_id)
-    student_model = create_student(origin_model) #创建学生模型
+    student_model = create_student(origin_model)  #创建学生模型
     tokenizer = DebertaV2Tokenizer.from_pretrained(origin_id)
+
 
     def preprocess_function(examples):
         return tokenizer(examples['sentence'], truncation=True, padding='max_length', max_length=510)
@@ -130,10 +152,10 @@ if __name__ == '__main__':
 
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-
     # 初始化指标计算器
     accuracy_metric = evaluate.load("accuracy")
     f1_metric = evaluate.load("f1")
+
 
     # 计算指标
     def compute_metrics(eval_pred):
@@ -181,7 +203,7 @@ if __name__ == '__main__':
         logging_dir='./logs',  # directory for storing logs
         logging_steps=100,
         save_strategy="no",
-        evaluation_strategy="epoch",
+        evaluation_strategy="step",
         # distillation parameters
         alpha=0.5,
         temperature=4.0
